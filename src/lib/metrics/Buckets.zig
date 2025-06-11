@@ -56,7 +56,7 @@ pub fn loop() void {
         };
         start_ts = std.time.timestamp();
         req_count = 0;
-        const timestamp_key = std.fmt.allocPrint(local_allocator.*, "metrics:req:min:1", .{bucket.start_ts}) catch |err| {
+        const timestamp_key = std.fmt.allocPrint(local_allocator.*, "metrics:req:min:1{any}", .{bucket.start_ts}) catch |err| {
             tether.instance.logger.err("Failed to Alloc {any}", .{err}) catch return;
             return;
         };

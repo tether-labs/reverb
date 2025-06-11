@@ -4,7 +4,7 @@ pub const Google = @import("Google.zig");
 pub const Github = @import("Github.zig");
 const Context = @import("../context.zig");
 const Cookie = @import("../core/Cookie.zig");
-const QueryBuilder = @import("../core/oauth/QueryBuilder.zig");
+const QueryBuilder = @import("QueryBuilder.zig");
 const JWT = @import("../core/JWT.zig");
 pub const JWT_SECRET = "37fe35bd1e029d247251b560c2d2cf2866834577d0166c221e2852bab8e5f3710dc055fe2b413b52a6e3d8f017711f7bf652e462be5dbbd041e7237748b3f267";
 

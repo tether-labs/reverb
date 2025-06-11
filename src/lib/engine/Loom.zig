@@ -12,7 +12,6 @@ const Scheduler = @import("async/Scheduler.zig");
 const xresume = Scheduler.xresume;
 const xsuspend = Scheduler.xsuspend;
 const ThreadRipper = @import("async/pool/ThreadRipper.zig");
-const Cors = @import("Cors.zig");
 const Client = @import("Client.zig");
 const KQueue = @import("KQueue.zig");
 const Stack = @import("async/types.zig").Stack;
@@ -115,7 +114,6 @@ pub const Loom = @This();
 id: usize = 0,
 arena: *Allocator = undefined,
 config: Config = undefined,
-// cors: ?Cors = null,
 // Max connections
 max: usize = undefined,
 
@@ -147,7 +145,6 @@ pub const Config = struct {
 };
 
 /// This is the Cors struct default set to null
-pub var cors: ?Cors = null;
 const FiberGen = Signature.fromFunc(listen, .{ .YieldT = *Conn, .InjectT = *Conn });
 pub fn new(target: *Loom, config: Config, arena: *Allocator, id: usize) !void {
     var scheduler: Scheduler = undefined;

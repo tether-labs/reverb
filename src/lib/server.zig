@@ -10,7 +10,6 @@ const Logger = @import("Logger.zig");
 const Parsed = std.json.Parsed;
 const net = std.net;
 const Loom = @import("engine/Loom.zig");
-const SLoom = @import("engine/SLoom.zig");
 const Radix = @import("trees/radix.zig");
 const Cors = @import("core/Cors.zig");
 const Context = @import("context.zig");
