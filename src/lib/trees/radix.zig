@@ -41,6 +41,94 @@ fn findCommonPrefix(a: []const u8, b: []const u8) usize {
     return i;
 }
 
+const V4 = @Vector(4, u8);
+const V8 = @Vector(8, u8);
+const V16 = @Vector(16, u8);
+const V32 = @Vector(32, u8);
+const V64 = @Vector(64, u8);
+const V128 = @Vector(128, u8);
+
+/// Finds the length of the common prefix of two slices using SIMD instructions.
+pub fn findCommonPrefixSIMD(a: []const u8, b: []const u8) usize {
+    // We can only compare up to the length of the shorter slice.
+    const len = @min(a.len, b.len);
+    var i: usize = 0;
+
+    // First, process the slices in 32-byte (256-bit) chunks.
+    // This loop is most effective on architectures with AVX2 support.
+    while (i + 32 <= len) : (i += 32) {
+        // Load 32 bytes from each slice. Slicing and then using @bitCast on the
+        // resulting array value is safer than @ptrCast as it avoids memory alignment issues.
+        const vec_a: V32 = @bitCast((a[i..][0..32].*));
+        const vec_b: V32 = @bitCast((b[i..][0..32].*));
+
+        // Perform a parallel comparison of all 32 bytes.
+        // The result 'mask' is a vector of booleans (0 for mismatch, 0xFF for match).
+        const mask = vec_a == vec_b;
+
+        // Cast the boolean mask to a 256-bit integer representation to check all at once.
+        const bits: u32 = @bitCast(mask);
+
+        // If 'bits' is not completely full of 1s, there was a mismatch in this chunk.
+        if (bits != 0) {
+            return i + @ctz(bits);
+        }
+    }
+
+    // After the 32-byte loop, there might be a 16-byte chunk remaining.
+    if (i + 16 <= len) {
+        const vec_a: V16 = @bitCast(a[i..][0..16].*);
+        const vec_b: V16 = @bitCast(b[i..][0..16].*);
+        const mask = vec_a == vec_b;
+        const bits: u16 = @bitCast(mask);
+
+        if (bits != 0) {
+            return i + @ctz(bits);
+        }
+        i += 16;
+    }
+
+    while (i < len and a[i] == b[i]) : (i += 1) {}
+
+    return i;
+}
+
+// Alternative version using bit operations for potentially better performance
+pub fn findCommonPrefixSIMDOptimized(a: []const u8, b: []const u8) usize {
+    const len = @min(a.len, b.len);
+    var i: usize = 0;
+
+    // Process 8-byte chunks using u64 comparison (often fastest for smaller vectors)
+    while (i + 8 <= len) : (i += 8) {
+        const a_chunk = std.mem.readInt(u64, a[i..][0..8], .little);
+        const b_chunk = std.mem.readInt(u64, b[i..][0..8], .little);
+        
+        if (a_chunk != b_chunk) {
+            // Find the first differing byte using XOR and trailing zeros
+            const diff = a_chunk ^ b_chunk;
+            const byte_offset = @ctz(diff) / 8;
+            return i + byte_offset;
+        }
+    }
+
+    // Process 4-byte chunks
+    while (i + 4 <= len) : (i += 4) {
+        const a_chunk = std.mem.readInt(u32, a[i..][0..4], .little);
+        const b_chunk = std.mem.readInt(u32, b[i..][0..4], .little);
+        
+        if (a_chunk != b_chunk) {
+            const diff = a_chunk ^ b_chunk;
+            const byte_offset = @ctz(diff) / 8;
+            return i + byte_offset;
+        }
+    }
+
+    // Handle remaining bytes with scalar comparison
+    while (i < len and a[i] == b[i]) : (i += 1) {}
+    
+    return i;
+}
+
 pub const Node = struct {
     prefix: []const u8,
     value: ?RouteFunc,
@@ -57,7 +145,7 @@ pub const Node = struct {
 
         while (children_itr.next()) |c| {
             const child_prefix = c.value_ptr.*.prefix;
-            const common_len = findCommonPrefix(child_prefix, prefix);
+            const common_len = findCommonPrefixSIMDOptimized(child_prefix, prefix);
             if (common_len > max_common_len) {
                 max_common_len = common_len;
                 best_match = c.value_ptr.*;
@@ -158,6 +246,53 @@ fn findSegmentEndIdx(path: []const u8) usize {
     return idx;
 }
 
+pub fn findNeedle(slice: []const u8, needle: u8) usize {
+    const splt_128: V128 = @splat(@as(u8, needle));
+    const splt_64: V64 = @splat(@as(u8, needle));
+    const splt_32: V32 = @splat(@as(u8, needle));
+
+    var i: usize = 0;
+    if (slice.len >= 128) {
+        while (i + 128 <= slice.len) : (i += 128) {
+            const v = slice[i..][0..128].*;
+            const vec: V128 = @bitCast(v);
+            const mask = vec == splt_128;
+            const bits: u128 = @bitCast(mask);
+            if (bits != 0) {
+                return i + @ctz(bits);
+            }
+        }
+    }
+    if (slice.len >= 64) {
+        while (i + 64 <= slice.len) : (i += 64) {
+            const v = slice[i..][0..64].*;
+            const vec: V64 = @bitCast(v);
+            const mask = vec == splt_64;
+            const bits: u64 = @bitCast(mask);
+            if (bits != 0) {
+                return i + @ctz(bits);
+            }
+        }
+    }
+    if (slice.len >= 32) {
+        while (i + 32 <= slice.len) : (i += 32) {
+            const v = slice[i..][0..32].*;
+            const vec: V32 = @bitCast(v);
+            const mask = vec == splt_32;
+            const bits: u32 = @bitCast(mask);
+            if (bits != 0) {
+                return i + @ctz(bits);
+            }
+        }
+    }
+
+    var j: usize = i;
+    while (j < slice.len) : (j += 1) {
+        if (slice[j] == needle) return j;
+    }
+    return slice.len;
+}
+
 // /api/test
 pub fn searchRoute(radix: *const Radix, path: []const u8) !?RouteHandler {
     var param_args: ?*std.ArrayList(ParamInfo) = null;
@@ -172,7 +307,7 @@ pub fn searchRoute(radix: *const Radix, path: []const u8) !?RouteHandler {
         // api/test
         // Skip leading slashes
         if (start >= path.len) break;
-        const end = findSegmentEndIdx(path[start..]) + start;
+        const end = findNeedle(path[start..], '/') + start;
         const segment = path[start..end];
         start = end;
 
@@ -180,7 +315,7 @@ pub fn searchRoute(radix: *const Radix, path: []const u8) !?RouteHandler {
         while (remaining.len > 0) {
             // We need to check this
             const match = node.findChildWithCommonPrefix(remaining) orelse break;
-            const common_len = findCommonPrefix(match.prefix, remaining);
+            const common_len = findCommonPrefixSIMDOptimized(match.prefix, remaining);
 
             if (common_len != match.prefix.len) return null;
             remaining = remaining[common_len..];

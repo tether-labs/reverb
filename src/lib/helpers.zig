@@ -78,6 +78,7 @@ pub const HTTPHeader = struct {
     content_length: usize = 0,
     connection: []const u8 = "",
     path: []const u8 = "",
+    body: []const u8 = "",
     // cookies: std.ArrayList([]const u8),
     method: []const u8 = "",
     accept_language: []const u8 = "",
@@ -213,53 +214,11 @@ pub fn findIndex(haystack: []const u8, needle: u8) ?usize {
 
 pub fn findCRLFCRLF(payload: []const u8) ?usize {
     if (payload.len < 4) return null;
-
-    // if (payload.len >= 128) {
-    //     // print("We check 128\n", .{});
-    //     const V = @Vector(128, u8);
-    //     const cr_pattern: V = @splat('\r');
-    //     var i: usize = 0;
-    //
-    //     while (i + 128 <= payload.len) : (i += 128) {
-    //         const chunk: V = payload[i..][0..128].*;
-    //         const cr_matches = chunk == cr_pattern;
-    //         const cr_mask: u128 = @bitCast(cr_matches);
-    //
-    //         if (cr_mask != 0) {
-    //             var mask = cr_mask;
-    //             while (mask != 0) {
-    //                 const pos = i + @ctz(mask);
-    //                 if (pos + 3 < payload.len and
-    //                     payload[pos + 1] == '\n' and
-    //                     payload[pos + 2] == '\r' and
-    //                     payload[pos + 3] == '\n')
-    //                 {
-    //                     return pos;
-    //                 }
-    //                 mask &= mask - 1;
-    //             }
-    //         }
-    //     }
-    //
-    //     // Check remaining bytes after last 128-byte chunk
-    //     i -= 3; // Ensure we check overlapping with the last chunk's end
-    //     while (i < payload.len - 3) : (i += 1) {
-    //         if (payload[i] == '\r' and
-    //             payload[i + 1] == '\n' and
-    //             payload[i + 2] == '\r' and
-    //             payload[i + 3] == '\n')
-    //         {
-    //             return i;
-    //         }
-    //     }
-    //     return null;
-    // }
-
+    var i: usize = 0;
     if (payload.len >= 64) {
         // print("We check 64\n", .{});
         const V = @Vector(64, u8);
         const cr_pattern: V = @splat('\r');
-        var i: usize = 0;
 
         while (i + 64 <= payload.len) : (i += 64) {
             const chunk: V = payload[i..][0..64].*;
@@ -299,7 +258,6 @@ pub fn findCRLFCRLF(payload: []const u8) ?usize {
     if (payload.len >= 32) {
         const V = @Vector(32, u8);
         const cr_pattern: V = @splat('\r');
-        var i: usize = 0;
 
         while (i + 32 <= payload.len) : (i += 32) {
             const chunk: V = payload[i..][0..32].*;
@@ -339,7 +297,6 @@ pub fn findCRLFCRLF(payload: []const u8) ?usize {
     if (payload.len >= 16) {
         const V = @Vector(16, u8);
         const cr_pattern: V = @splat('\r');
-        var i: usize = 0;
 
         while (i + 16 <= payload.len) : (i += 16) {
             const chunk: V = payload[i..][0..16].*;
@@ -377,14 +334,14 @@ pub fn findCRLFCRLF(payload: []const u8) ?usize {
     }
 
     // Non-SIMD path for small payloads
-    var i: usize = 0;
-    while (i <= payload.len - 4) : (i += 1) {
-        if (payload[i] == '\r' and
-            payload[i + 1] == '\n' and
-            payload[i + 2] == '\r' and
-            payload[i + 3] == '\n')
+    var j: usize = i;
+    while (j <= payload.len - 4) : (j += 1) {
+        if (payload[j] == '\r' and
+            payload[j + 1] == '\n' and
+            payload[j + 2] == '\r' and
+            payload[j + 3] == '\n')
         {
-            return i;
+            return j;
         }
     }
     return null;
@@ -427,18 +384,32 @@ const CommonStrings = struct {
 const commonStrings = CommonStrings{};
 
 /// Find the index of '\r' in the slice. For slices 32 bytes or longer, use a SIMD‐like approach.
+const V128 = @Vector(128, u8);
+const splt_128: V128 = @splat(@as(u8, '\r'));
+
 const V64 = @Vector(64, u8);
-const splt: V64 = @splat(@as(u8, '\r'));
+const splt_64: V64 = @splat(@as(u8, '\r'));
 
 const V32 = @Vector(32, u8);
 const splt_32: V32 = @splat(@as(u8, '\r'));
 pub fn findCRLF(slice: []const u8) usize {
+    var i: usize = 0;
+    if (slice.len >= 128) {
+        while (i + 128 <= slice.len) : (i += 128) {
+            const v = slice[i..][0..128].*;
+            const vec: V128 = @bitCast(v);
+            const mask = vec == splt_128;
+            const bits: u128 = @bitCast(mask);
+            if (bits != 0) {
+                return i + @ctz(bits);
+            }
+        }
+    }
     if (slice.len >= 64) {
-        var i: usize = 0;
         while (i + 64 <= slice.len) : (i += 64) {
             const v = slice[i..][0..64].*;
             const vec: V64 = @bitCast(v);
-            const mask = vec == splt;
+            const mask = vec == splt_64;
             const bits: u64 = @bitCast(mask);
             if (bits != 0) {
                 return i + @ctz(bits);
@@ -446,7 +417,6 @@ pub fn findCRLF(slice: []const u8) usize {
         }
     }
     if (slice.len >= 32) {
-        var i: usize = 0;
         while (i + 32 <= slice.len) : (i += 32) {
             const v = slice[i..][0..32].*;
             const vec: V32 = @bitCast(v);
@@ -458,9 +428,9 @@ pub fn findCRLF(slice: []const u8) usize {
         }
     }
 
-    var i: usize = 0;
-    while (i < slice.len) : (i += 1) {
-        if (slice[i] == '\r') return i;
+    var j: usize = i;
+    while (j < slice.len) : (j += 1) {
+        if (slice[j] == '\r') return j;
     }
     return slice.len;
 }
@@ -495,42 +465,42 @@ const MethodTrie = struct {
     const values = [4]u64{ v1, v2, v3, v4 };
 };
 
+//wrk test payload is
+// GET /ping HTTP/1.1
+// Host: 127.0.0.1:8080
+
 var http_header: HTTPHeader = HTTPHeader{};
 pub fn parseHeaders(payload: []const u8, ctx_pm: *Ctx_pm) *HTTPHeader {
     // Allocate space for the copy (same length as original)
-    var is_first_line = true; // Track if we're on the request line
     var i: usize = 0;
     var line_start: usize = 0;
 
-    if (is_first_line) {
-        const header_type = HeaderLookup.first_char[payload[0]];
-        switch (header_type) {
-            1 => ctx_pm.method = commonStrings.get,
-            2 => ctx_pm.method = switch (payload[1]) {
-                'O' => commonStrings.post,
-                else => commonStrings.patch,
-            },
-            3 => ctx_pm.method = commonStrings.delete,
-            4 => switch (payload[1]) {
-                'P' => ctx_pm.method = commonStrings.update,
-                else => {},
-            },
+    switch (HeaderLookup.first_char[payload[0]]) {
+        1 => ctx_pm.method = commonStrings.get,
+        2 => ctx_pm.method = switch (payload[1]) {
+            'O' => commonStrings.post,
+            else => commonStrings.patch,
+        },
+        3 => ctx_pm.method = commonStrings.delete,
+        4 => switch (payload[1]) {
+            'P' => ctx_pm.method = commonStrings.update,
             else => {},
-        }
-        // Find CRLF with SIMD+word scan
-        const sentinal = findCRLF(payload);
-
-        // Direct path assignment (no copy)
-        const value = payload[ctx_pm.method.len + 1 .. sentinal];
-        ctx_pm.path = value[0 .. sentinal - 13];
-
-        is_first_line = false;
-
-        i = sentinal + 1;
-        line_start = i + 1;
+        },
+        else => {},
     }
+    // std.debug.print("We check payload {s}\n", .{payload});
+    // Find CRLF with SIMD+word scan
+    const request_line_sentinal = findCRLF(payload);
+
+    // Direct path assignment (no copy)
+    const request_line_value = payload[ctx_pm.method.len + 1 .. request_line_sentinal];
+    ctx_pm.path = request_line_value[0 .. request_line_sentinal - 13];
+
+    i = request_line_sentinal + 1;
+    line_start = i + 1;
 
     const last = findCRLFCRLF(payload).?;
+    http_header.body = payload[last + 4 ..];
     while (i < last) : (i += 1) {
         const c = payload[i];
         if (c != ' ') continue;
@@ -626,76 +596,6 @@ pub fn parseHeaders(payload: []const u8, ctx_pm: *Ctx_pm) *HTTPHeader {
     }
 
     return &http_header;
-}
-
-// var count: usize = 0;
-pub fn parseHeader(http_payload: []const u8, ctx_pm: *Ctx_pm) HTTPHeader {
-    // _ = @Vector(1024, u8);
-    // while (count < http_payload.len) {
-    //     _ = http_payload[count];
-    //     count += 1;
-    // }
-    // const http_header = HTTPHeader{};
-    // return http_header;
-    return parseHeaders(http_payload, ctx_pm);
-    // const header_struct = try HTTPHeader.init(arena);
-    // var req_parts = mem.tokenizeSequence(u8, http_payload, "\r\n\r\n");
-    // _ = req_parts.next() orelse return null;
-
-    // const start_index = findCRLFCRLF(http_payload);
-
-    // const delimiter = "\r\n\r\n";
-    // // Find the index of the header terminator
-    // _ = std.mem.indexOf(u8, http_payload, delimiter) orelse return null;
-    // _ = http_payload[0..delim_index];
-
-    // var header_itr = mem.tokenizeSequence(u8, header, "\r\n");
-    // if (mem.indexOf(u8, header_itr.peek().?, "HTTP/1.1") == null) return null;
-    // header_struct.request_line = header_itr.next() orelse return ServerError.HeaderMalformed;
-
-    // while (header_itr.next()) |line| {
-    //     const name_slice = mem.sliceTo(line, ':');
-    //     const header_name = std.meta.stringToEnum(Header, name_slice) orelse continue;
-    //     const header_value = mem.trimLeft(u8, line[name_slice.len + 1 ..], " ");
-    //     switch (header_name) {
-    //         .Host => header_struct.host = header_value,
-    //         .Accept => header_struct.accept = header_value,
-    //         .Upgrade => {
-    //             header_struct.upgrade = header_value;
-    //             header_struct.connection = ConnectionTypes.Upgrade;
-    //         },
-    //         .@"Sec-WebSocket-Key" => header_struct.ws_client_key = header_value,
-    //         .@"Sec-WebSocket-Version" => header_struct.ws_version = header_value,
-    //         .@"User-Agent" => header_struct.user_agent = header_value,
-    //         .Cookie => {
-    //             var cookies_split = std.mem.splitSequence(u8, header_value, "; ");
-    //             while (cookies_split.next()) |cookie_line| {
-    //                 var cookie_split = std.mem.splitSequence(u8, cookie_line, "=");
-    //                 while (cookie_split.next()) |cookie_name_or_value| {
-    //                     try header_struct.cookies.append(cookie_name_or_value);
-    //                 }
-    //             }
-    //         },
-    //         .@"Content-Type" => {
-    //             if (mem.eql(u8, header_value, "application/json")) {
-    //                 header_struct.content_type = ContentType.JSON;
-    //             } else if (mem.eql(u8, header_value, "application/x-www-form-urlencoded")) {
-    //                 header_struct.content_type = ContentType.Form;
-    //             } else if (mem.startsWith(u8, header_value, "multipart/form-data; boundary=")) {
-    //                 header_struct.content_type = ContentType.MultiForm;
-    //                 const boundary = header_value[30..];
-    //                 header_struct.boundary = boundary;
-    //             } else {
-    //                 header_struct.content_type = ContentType.None;
-    //             }
-    //         },
-    //         .@"Accept-Language" => header_struct.accept_language = header_value,
-    //         .@"Accept-Encoding" => header_struct.accept_encoding = header_value,
-    //         .@"Access-Control-Request-Method" => header_struct.accept_control_request_method = header_value,
-    //         .@"Access-Control-Request-Headers" => header_struct.accept_control_request_headers = header_value,
-    //     }
-    // }
-    //
 }
 
 pub fn parseParams(ctx: *Context, url: []const u8) !?[]const u8 {

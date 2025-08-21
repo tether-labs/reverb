@@ -192,44 +192,108 @@ pub fn addFormParam(self: *Self, key: []const u8, value: []const u8) !void {
 }
 
 fn generateCookieString(self: *Self) ![]const u8 {
-    var buffer_cookie = std.ArrayList(u8).init(self.arena.*);
-    defer buffer_cookie.deinit();
-
+    if (self.cookies.count() == 0) {
+        return "\r\n";
+    }
+    // Pre-calculate required buffer size to avoid reallocations
+    var estimated_size: usize = 0;
     var cookies_itr = self.cookies.iterator();
-    // var builder: std.RingBuffer = try std.RingBuffer.init(self.arena, 4096);
     while (cookies_itr.next()) |entry| {
         const key = entry.key_ptr.*;
         const cookie = entry.value_ptr.*;
-        _ = try buffer_cookie.writer().write("Set-Cookie: ");
-        _ = try buffer_cookie.writer().write(key);
-        _ = try buffer_cookie.writer().write("=");
-        _ = try buffer_cookie.writer().write(cookie.value);
-        _ = try buffer_cookie.writer().write("; ");
+        // "Set-Cookie: " + key + "=" + value + "; Path=/;\r\n" + extras
+        estimated_size += 12 + key.len + 1 + cookie.value.len + 10 + 2; // base components
+        if (cookie.secure) estimated_size += 7; // "Secure;"
+        if (cookie.expires != null) estimated_size += 20; // "Max-Age=XXXXXXX;" (rough estimate)
+        if (cookie.http_only) estimated_size += 8; // "HttpOnly"
+    }
+
+    // Create ArrayList with pre-allocated capacity
+    var buffer_cookie = try std.ArrayList(u8).initCapacity(self.arena.*, estimated_size);
+    defer buffer_cookie.deinit();
+
+    // Reset iterator
+    cookies_itr = self.cookies.iterator();
+
+    while (cookies_itr.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const cookie = entry.value_ptr.*;
+
+        // Use appendSlice instead of multiple write calls for better performance
+        try buffer_cookie.appendSlice("Set-Cookie: ");
+        try buffer_cookie.appendSlice(key);
+        try buffer_cookie.appendSlice("=");
+        try buffer_cookie.appendSlice(cookie.value);
+        try buffer_cookie.appendSlice("; ");
+
         if (cookie.secure) {
-            _ = try buffer_cookie.writer().write("Secure;");
+            try buffer_cookie.appendSlice("Secure; ");
         }
-        _ = try buffer_cookie.writer().write("Path=/;");
+
+        try buffer_cookie.appendSlice("Path=/; ");
+
         if (cookie.expires) |expires| {
-            try buffer_cookie.writer().print(
-                "Max-Age={d};",
-                .{expires},
-            );
+            // Use a small buffer for number formatting to avoid writer overhead
+            var num_buf: [32]u8 = undefined;
+            const expires_str = try std.fmt.bufPrint(&num_buf, "Max-Age={d}; ", .{expires});
+            try buffer_cookie.appendSlice(expires_str);
         }
 
         if (cookie.http_only) {
-            _ = try buffer_cookie.writer().write("HttpOnly");
+            try buffer_cookie.appendSlice("HttpOnly; ");
         }
-        if (cookies_itr.index <= self.cookies.count() - 1) {
-            _ = try buffer_cookie.writer().write(";");
+
+        // Remove trailing "; " and add CRLF
+        if (buffer_cookie.items.len >= 2 and
+            std.mem.eql(u8, buffer_cookie.items[buffer_cookie.items.len - 2 ..], "; "))
+        {
+            buffer_cookie.shrinkRetainingCapacity(buffer_cookie.items.len - 2);
         }
-        _ = try buffer_cookie.writer().write("\r\n");
-    } else {
-        _ = try buffer_cookie.writer().write("\r\n");
+        try buffer_cookie.appendSlice("\r\n");
     }
 
-    const cookie_str = buffer_cookie.toOwnedSlice();
-    return cookie_str;
+    return buffer_cookie.toOwnedSlice();
 }
+
+// fn generateCookieString(self: *Self) ![]const u8 {
+//     var buffer_cookie = std.ArrayList(u8).init(self.arena.*);
+//     defer buffer_cookie.deinit();
+//
+//     var cookies_itr = self.cookies.iterator();
+//     // var builder: std.RingBuffer = try std.RingBuffer.init(self.arena, 4096);
+//     while (cookies_itr.next()) |entry| {
+//         const key = entry.key_ptr.*;
+//         const cookie = entry.value_ptr.*;
+//         _ = try buffer_cookie.writer().write("Set-Cookie: ");
+//         _ = try buffer_cookie.writer().write(key);
+//         _ = try buffer_cookie.writer().write("=");
+//         _ = try buffer_cookie.writer().write(cookie.value);
+//         _ = try buffer_cookie.writer().write("; ");
+//         if (cookie.secure) {
+//             _ = try buffer_cookie.writer().write("Secure;");
+//         }
+//         _ = try buffer_cookie.writer().write("Path=/;");
+//         if (cookie.expires) |expires| {
+//             try buffer_cookie.writer().print(
+//                 "Max-Age={d};",
+//                 .{expires},
+//             );
+//         }
+//
+//         if (cookie.http_only) {
+//             _ = try buffer_cookie.writer().write("HttpOnly");
+//         }
+//         if (cookies_itr.index <= self.cookies.count() - 1) {
+//             _ = try buffer_cookie.writer().write(";");
+//         }
+//         _ = try buffer_cookie.writer().write("\r\n");
+//     } else {
+//         _ = try buffer_cookie.writer().write("\r\n");
+//     }
+//
+//     const cookie_str = buffer_cookie.toOwnedSlice();
+//     return cookie_str;
+// }
 
 const error_resp =
     "Vary: Origin\r\n" ++
@@ -385,8 +449,11 @@ pub const String = struct {
 const string_success_resp =
     "HTTP/1.1 200 OK\r\n" ++
     "Vary: Origin\r\n" ++
-    // "Connection: close\r\n" ++
-    "Content-Type: text/html\r\n";
+    "Content-Type: text/plain charset=utf-8\r\n";
+// "Connection: close\r\n" ++
+// "Content-Type: text/html\r\n";
+
+// const resp = "HTTP/1.1 200 OK\r\nDate: Tue, 19 Aug 2025 18:37:36 GMT\r\nContent-Length: 7\r\nContent-Type: text/plain charset=utf-8\r\n\r\nSUCCESS";
 
 var buffer: [65535]u8 = undefined;
 pub fn STRING(self: *Self, payload: []const u8) !void {
@@ -450,7 +517,6 @@ pub fn STRING(self: *Self, payload: []const u8) !void {
 
     end += payload.len;
     @memcpy(buffer[start..end], payload);
-    std.debug.print("{s}\n", .{buffer[0..end]});
     _ = try posix.write(self.client.?.socket, buffer[0..end]);
 }
 
@@ -467,34 +533,34 @@ pub fn STRING(self: *Self, payload: []const u8) !void {
 //     "Access-Control-Max-Age: 86400\r\n\r\n";
 
 pub fn RAW(self: *Self, raw: []const u8) !void {
-    var end: usize = raw.len;
-    var start: usize = 0;
+    // const end: usize = raw.len;
+    // const start: usize = 0;
 
     // Success Response
-    @memcpy(buffer[start..end], raw);
-    start = raw.len;
+    // @memcpy(buffer[start..end], raw);
+    // start = raw.len;
 
-    // Cors
-    if (cors_headers) |ch| {
-        end += ch.len;
-        @memcpy(buffer[start..end], ch);
-        start += ch.len;
-    }
-
-    if (self.http_header.accept_control_request_headers.len > 0) {
-        const access_ctrl_req_headers = "Access-Control-Allow-Headers: ";
-        end += access_ctrl_req_headers.len;
-        @memcpy(buffer[start..end], access_ctrl_req_headers);
-        start += access_ctrl_req_headers.len;
-
-        end += self.http_header.accept_control_request_headers.len;
-        @memcpy(buffer[start..end], self.http_header.accept_control_request_headers);
-        start += self.http_header.accept_control_request_headers.len;
-
-        end += 2;
-        @memcpy(buffer[start..end], "\r\n");
-        start += 2;
-    }
+    // // Cors
+    // if (cors_headers) |ch| {
+    //     end += ch.len;
+    //     @memcpy(buffer[start..end], ch);
+    //     start += ch.len;
+    // }
+    //
+    // if (self.http_header.accept_control_request_headers.len > 0) {
+    //     const access_ctrl_req_headers = "Access-Control-Allow-Headers: ";
+    //     end += access_ctrl_req_headers.len;
+    //     @memcpy(buffer[start..end], access_ctrl_req_headers);
+    //     start += access_ctrl_req_headers.len;
+    //
+    //     end += self.http_header.accept_control_request_headers.len;
+    //     @memcpy(buffer[start..end], self.http_header.accept_control_request_headers);
+    //     start += self.http_header.accept_control_request_headers.len;
+    //
+    //     end += 2;
+    //     @memcpy(buffer[start..end], "\r\n");
+    //     start += 2;
+    // }
 
     // const access_ctrl_req_methods = "Access-Control-Allow-Method: ";
     // end += access_ctrl_req_methods.len;
@@ -509,10 +575,10 @@ pub fn RAW(self: *Self, raw: []const u8) !void {
     // @memcpy(buffer[start..end], "\r\n");
     // start += 2;
 
-    end += 2;
-    @memcpy(buffer[start..end], "\r\n");
-    start += 2;
-    _ = try posix.write(self.client.?.socket, buffer[0..end]);
+    // end += 2;
+    // @memcpy(buffer[start..end], "\r\n");
+    // start += 2;
+    _ = try posix.write(self.client.?.socket, raw);
 }
 
 fn getUnderlyingType(comptime T: type) type {

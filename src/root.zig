@@ -2,7 +2,8 @@
 //! you are making an executable, the convention is to delete this file and
 //! start with main.zig instead.
 const std = @import("std");
-pub const Server = @import("lib/server.zig");
+pub const Server = @import("lib/Server.zig");
+pub const Scheduler = @import("lib/engine/async/Scheduler.zig");
 pub const Treehouse = @import("lib/treehouse.zig");
 pub const TrackingAllocator = @import("lib/TrackingAllocator.zig");
 pub const Context = @import("lib/context.zig");

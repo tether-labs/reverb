@@ -3,6 +3,7 @@ const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const KQueue = @import("KQueue.zig");
 const Loom = @import("Loom.zig");
+const Fiber = @import("async/Fiber.zig");
 
 const ClientList = std.DoublyLinkedList(*Client);
 const ClientNode = ClientList.Node;
@@ -12,6 +13,7 @@ kqueue: *KQueue,
 
 socket: posix.socket_t,
 address: std.net.Address,
+fiber: *Fiber = undefined,
 
 // Used to read length-prefixed messages
 msg: []const u8,
@@ -129,7 +131,8 @@ pub fn findCRLFCRLF(payload: []const u8) ?usize {
     return null;
 }
 
-var reader_buf: [2097152]u8 = [_]u8{0} ** 2097152;
+pub var reader_buf: [2097152]u8 = [_]u8{0} ** 2097152;
+// pub var reader_buf: []u8 = undefined;
 pub fn readMessage(self: *Client) ![]const u8 {
     // return self.reader.readMessage(self.socket) catch |err| {
     //     // try Loom.logger.err("Read msg {any}", .{err}, @src());
@@ -165,27 +168,6 @@ pub fn writeMessage(self: *Client, _: []const u8) !?void {
             else => return err,
         }
     };
-
-    // self.pos = msg.len;
-    // @memcpy(self.buf[self.start..self.pos], msg);
-    // var buf = self.buf;
-    // const pos = self.pos;
-    // const start = self.start;
-    // std.debug.assert(pos >= start);
-    // const wv = posix.write(self.socket, msg) catch |err| {
-    //     switch (err) {
-    //         error.WouldBlock => {
-    //             try self.kqueue.writeMode(self);
-    //             return null;
-    //         },
-    //         else => return err,
-    //     }
-    // };
-    // if (wv == 0) {
-    //     return error.Closed;
-    // }
-
-    // self.writer.buf = undefined;
 }
 
 pub fn fillWriteBuffer(self: *Client, msg: []const u8) !void {
@@ -210,10 +192,6 @@ pub fn handle(client: *Client) !void {
             }
         };
 
-        // client.read_timeout = std.time.milliTimestamp() + READ_TIMEOUT_MS;
-        // read_timeout_list.remove(client.read_timeout_node);
-        // read_timeout_list.append(client.read_timeout_node);
-
         client.fillWriteBuffer(msg) catch |err| {
             std.debug.print("Fill Error: {any}\n", .{err});
         };
@@ -223,13 +201,6 @@ pub fn handle(client: *Client) !void {
             posix.close(client.socket);
             break;
         };
-
-        // var conn = Conn{
-        //     .client = client,
-        //     .msg = msg,
-        //     .received = true,
-        // };
-        // _ = FiberGen.xyield(&conn);
     }
 }
 

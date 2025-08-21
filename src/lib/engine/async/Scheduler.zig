@@ -8,8 +8,8 @@ const Signature = @import("Signature.zig");
 const Status = Fiber.Status;
 const utils = @import("utils.zig");
 const Stack = @import("types.zig").Stack;
-const ThreadRipper = @import("pool/ThreadRipper.zig");
-const GateKeeper = ThreadRipper.GateKeeper;
+// const ThreadRipper = @import("pool/ThreadRipper.zig");
+// const GateKeeper = ThreadRipper.GateKeeper;
 pub const Channel = @import("Channel.zig");
 const print = std.debug.print;
 const mem = std.mem;
@@ -29,8 +29,8 @@ const Scheduler = @This();
 allocator: mem.Allocator,
 default_stack_size: usize = 1024 * 4,
 status: SchedulerStatus = .Inactive,
-atm_pool: ThreadRipper = undefined,
-gate_keeper: GateKeeper = undefined,
+// atm_pool: ThreadRipper = undefined,
+// gate_keeper: GateKeeper = undefined,
 
 pub fn init(target: *Scheduler, allocator: mem.Allocator) !void {
     target.* = .{
@@ -44,13 +44,13 @@ pub fn deinit(scheduler: *Scheduler) void {
 
 /// InitPool creates a new thread atm_pool
 /// takes and opts config for allocator
-pub fn initPool(scheduler: *Scheduler, tp_opts: ThreadRipper.Options) !void {
-    var tr: ThreadRipper = undefined;
-    tr.init(tp_opts) catch |err| {
-        std.log.err("Initialization of Pool Error: {any}\n", .{err});
-        return err;
-    };
-    scheduler.atm_pool = tr;
+pub fn initPool(scheduler: *Scheduler) !void {
+    // var tr: ThreadRipper = undefined;
+    // tr.init(tp_opts) catch |err| {
+    //     std.log.err("Initialization of Pool Error: {any}\n", .{err});
+    //     return err;
+    // };
+    scheduler.atm_pool = undefined;
     createdThreadPool = true;
 }
 
@@ -79,7 +79,7 @@ pub fn initGK(scheduler: *Scheduler) !void {
 /// - `size`: ?usize,
 /// example usage:
 /// ```zig
-/// const stack = try sclr.stackalloca(1024);
+/// const stack = try sclr.stackAlloc(1024);
 /// ```
 /// for more info see [the docs](url)
 pub fn stackAlloc(sclr: *Scheduler, size: ?usize) !Stack {
@@ -91,6 +91,19 @@ pub fn stackAlloc(sclr: *Scheduler, size: ?usize) !Stack {
         std.log.err("Stack Alloc error: {any}\n", .{err});
         return err;
     };
+}
+
+/// Frees a stack
+/// # Parameters:
+/// - `sclr`: *Scheduler, A scheduler
+/// - `stack`: Stack,
+/// Example usage:
+/// ```zig
+///    freeStack(stack);
+/// ```
+/// For more info see [the docs](url)
+pub fn freeStack(sclr: *Scheduler, stack: Stack) void {
+    sclr.allocator.free(stack);
 }
 
 // ========================================================================
@@ -105,7 +118,7 @@ pub fn stackAlloc(sclr: *Scheduler, size: ?usize) !Stack {
 /// ```
 /// For more info see [the docs](url)
 pub fn createFiber(func: anytype, args: anytype, stack: Stack) !*Fiber {
-    utils.assert_cm(@typeInfo(@TypeOf(func)) == .Fn, "Fibers must take a function as input");
+    utils.assert_cm(@typeInfo(@TypeOf(func)) == .@"fn", "Fibers must take a function as input");
     var fiber: *Fiber = undefined;
     fiber = try Fiber.init(func, args, stack);
     return fiber;
@@ -203,7 +216,7 @@ pub fn initFromStack(func: *const fn () anyerror!void, stack: *StackConstruct, s
     };
     fiber.* = Fiber{
         .func = func,
-        .frame = base_frame,
+        .f_frame = base_frame,
         .storage = storage,
         .id = maker_state.newFiberId(),
     };
@@ -219,6 +232,17 @@ pub fn initFromStack(func: *const fn () anyerror!void, stack: *StackConstruct, s
 /// For more info see [the docs](url)
 pub fn xresume(target: *Fiber) void {
     maker_state.switchIn(target);
+}
+
+/// activate function activates the target coroutine from the localmaker
+/// # Parameters:
+/// Example usage:
+/// ```zig
+///    fiber.activate();
+/// ```
+/// For more info see [the docs](url)
+pub fn activate(fiber: *Fiber) void {
+    maker_state.switchIn(fiber);
 }
 
 /// suspend, suspends the target coroutine;
@@ -269,9 +293,9 @@ pub fn xcancel(target: *Fiber) void {
 pub threadlocal var maker_state: Maker = .{};
 pub const Maker = struct {
     fiber: Fiber = .{
-        .status = .Start,
+        .f_status = .Start,
         .func = undefined,
-        .frame = undefined,
+        .f_frame = undefined,
         .id = undefined,
     },
     callee: ?*Fiber = null,
@@ -290,7 +314,7 @@ pub const Maker = struct {
     }
 
     pub fn switchIn(maker: *@This(), target: *Fiber) void {
-        utils.assert_cm(target.status != Status.Done, "Cannot resume an already completed coroutine");
+        utils.assert_cm(target.f_status != Status.Done, "Cannot resume an already completed coroutine");
         maker.switchTo(target, true);
     }
 
@@ -317,14 +341,14 @@ pub const Maker = struct {
         // Here we grab the current running coroutine
         const current_fiber = maker.current();
         if (current_fiber == target) return;
-        if (current_fiber.status != .Done) current_fiber.status = .Suspended;
+        if (current_fiber.f_status != .Done) current_fiber.f_status = .Suspended;
         // we set the target.caller to the current runningfiber
         if (set_caller) target.caller = current_fiber;
-        target.status = .Active;
+        target.f_status = .Active;
         // then we set the callee to the target
         maker.callee = target;
         // then we call the current_fiber to switch to the target
-        current_fiber.frame.switchTo(&target.frame);
+        current_fiber.f_frame.switchTo(&target.f_frame);
     }
 
     fn current(maker: *@This()) *Fiber {
@@ -484,3 +508,4 @@ pub const Maker = struct {
 //     std.debug.print("{d} Main Sending {d}\n", .{ std.time.milliTimestamp(), val });
 //     try chan.send(val);
 // }
+

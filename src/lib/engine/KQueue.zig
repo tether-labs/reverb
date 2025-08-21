@@ -14,7 +14,7 @@ const posix = std.posix;
 pub const KQueue = @This();
 kfd: posix.fd_t = undefined,
 event_list: [1024]system.Kevent = undefined,
-change_list: [8]system.Kevent = undefined,
+change_list: [128]system.Kevent = undefined,
 change_count: usize = 0,
 
 pub fn init() !KQueue {
@@ -78,7 +78,7 @@ pub fn newClient(self: *KQueue, client: *Client) !void {
     try self.queueChange(.{
         .ident = @intCast(client.socket),
         .filter = posix.system.EVFILT.READ,
-        .flags = posix.system.EV.ADD,
+        .flags = posix.system.EV.ADD | posix.system.EV.CLEAR, // I added CLEAR here
         .fflags = 0,
         .data = 0,
         .udata = @intFromPtr(client),
@@ -101,9 +101,8 @@ pub fn readMode(self: *KQueue, client: *Client) !void {
         .flags = posix.system.EV.DISABLE,
         .fflags = 0,
         .data = 0,
-        .udata = 0,
+        .udata = @intFromPtr(client), // <-- Always pass the correct pointer
     });
-
     try self.queueChange(.{
         .ident = @intCast(client.socket),
         .filter = posix.system.EVFILT.READ,
@@ -121,7 +120,7 @@ pub fn writeMode(self: *KQueue, client: *Client) !void {
         .flags = posix.system.EV.DISABLE,
         .fflags = 0,
         .data = 0,
-        .udata = 0,
+        .udata = @intFromPtr(client), // <-- Always pass the correct pointer
     });
 
     try self.queueChange(.{
@@ -132,6 +131,10 @@ pub fn writeMode(self: *KQueue, client: *Client) !void {
         .data = 0,
         .udata = @intFromPtr(client),
     });
+}
+
+pub fn addEventRaw(self: *KQueue, event: system.Kevent) !void {
+    try self.queueChange(event);
 }
 
 // In your KQueue struct:

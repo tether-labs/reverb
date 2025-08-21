@@ -15,10 +15,13 @@ const ThreadRipper = @import("async/pool/ThreadRipper.zig");
 const Client = @import("Client.zig");
 const KQueue = @import("KQueue.zig");
 const Stack = @import("async/types.zig").Stack;
+const Fiber = @import("async/Fiber.zig");
+const createFiber = Scheduler.createFiber;
 const process = @import("../handler.zig").handle;
 const Context = @import("../context.zig");
 const Tether = @import("../server.zig");
 const dom = @import("../core/simdjson/dom.zig");
+const Io = @import("Io.zig");
 
 // EVFILT_READ
 // Monitors for data available to read
@@ -121,6 +124,9 @@ listener: *posix.socket_t = undefined,
 
 // Event Loop
 kqueue: KQueue = undefined,
+io: Io = undefined,
+stacks: []Stack = undefined,
+current_fiber: *Fiber = undefined,
 
 // The number of clients we currently have connected
 connected: u32 = undefined,
@@ -137,11 +143,11 @@ scheduler: Scheduler = undefined,
 stack: Stack = undefined,
 
 pub const Config = struct {
-    server_addr: []const u8,
-    server_port: u16,
-    sticky_server: bool,
-    tls: bool,
-    max: usize = 16384,
+    server_addr: []const u8 = "0.0.0.0",
+    server_port: u16 = 8080,
+    sticky_server: bool = false,
+    max: usize = 256,
+    max_body_size: usize = 4 * 1024 * 1024,
 };
 
 /// This is the Cors struct default set to null
@@ -151,27 +157,33 @@ pub fn new(target: *Loom, config: Config, arena: *Allocator, id: usize) !void {
     try scheduler.init(arena.*);
     loom_engine = scheduler;
 
+    var kqueue = try KQueue.init();
+    errdefer kqueue.deinit();
+
+    var io: Io = undefined;
+    io.init(arena, &kqueue);
+
+    const stacks = try arena.alloc(Stack, config.max);
+    for (0..config.max) |i| {
+        stacks[i] = try scheduler.stackAlloc(1024 * 128);
+    }
+
     logger.init();
-    var loom = Loom{
+    target.* = Loom{
         .id = id,
         .config = config,
         .arena = arena,
         .max = config.max,
-        // .kqueue = kqueue,
         .connected = 0,
         .read_timeout_list = .{},
         .client_pool = std.heap.MemoryPool(Client).init(arena.*),
         .context_pool = std.heap.MemoryPool(Context).init(arena.*),
         .client_node_pool = std.heap.MemoryPool(ClientNode).init(arena.*),
         .scheduler = scheduler,
+        .kqueue = kqueue,
+        .stacks = stacks,
+        .io = io,
     };
-    // We need to find a way to determine the size of the stack
-    // This is important since the corutine switch between theloom
-    const stack = try scheduler.stackAlloc(1024 * 10);
-    // const fiber = try FiberGen.init(.{&loom}, stack);
-    // loom.fiber = fiber;
-    loom.stack = stack;
-    target.* = loom;
 }
 
 pub fn deinit(self: *Loom) void {
@@ -179,7 +191,6 @@ pub fn deinit(self: *Loom) void {
     self.client_pool.deinit();
     self.client_node_pool.deinit();
     self.arena.free(self.stack);
-    // self.scheduler.deinit();
 }
 
 pub fn createListener(loom: *Loom) !c_int {
@@ -221,111 +232,27 @@ pub fn accept(self: *Loom) ?*Conn {
     }
     return null;
 }
-
-// const red = "\x1b[91m"; // ANSI escape code for red color
-// const yellow = "\x1b[93m"; // ANSI escape code for red color
-// const yellow = "\x1b[36m";
-// const background = "\x1b[36m"; // ANSI escape code for red color
-// const reset = "\x1b[0m"; // ANSI escape code to reset color
-// const bold = "\x1b[1m"; // ANSI escape code to reset color
-
-// const ascii_art =
-//     \\ ______   ______     ______   __  __     ______     ______
-//     \\/\__  _\ /\  ___\   /\__  _\ /\ \_\ \   /\  ___\   /\  == \
-//     \\\/_/\ \/ \ \  __\   \/_/\ \/ \ \  __ \  \ \  __\   \ \  __<
-//     \\   \ \_\  \ \_____\    \ \_\  \ \_\ \_\  \ \_____\  \ \_\ \_\
-//     \\    \/_/   \/_____/     \/_/   \/_/\/_/   \/_____/   \/_/ /_/
-// ;
-//
-// print("\n{s}{s}{s}{s}\n\n", .{ bold, yellow, ascii_art, reset });
-
-// try logger.info(
-//     "{s}{s}Running  {s}:{}{s}",
-//     .{ bold, background, loom.config.server_addr, loom.config.server_port, reset },
-//     @src(),
-// );
-
-// var thread = try std.Thread.spawn(.{}, run, .{ loom, listener });
-// thread.detach();
-// while (true) {}
-
-// for (0..4) |i| {
-//     // const inner_loom = try t.arena.create(Loom);
-//     // try inner_loom.new(
-//     //     .{
-//     //         .tls = false,
-//     //         .server_addr = loom.config.server_addr,
-//     //         .server_port = loom.config.server_port,
-//     //         .sticky_server = false,
-//     //     },
-//     //     t.arena,
-//     //     i,
-//     // );
-//     // inner_loom.listener = &listener;
-//     // try loom.kqueue.addListener(listener);
-//     const inner_ctx = try t.arena.create(Context);
-//     inner_ctx.* = try Context.init(
-//         t.arena,
-//         "",
-//         "",
-//         null,
-//         null,
-//         "",
-//         null,
-//     );
-//     inner_ctx.id = i;
-//     // try t.loom.multi(t, &inner_ctx);
-//     try multi(loom, listener, t, inner_ctx);
-// }
-// while (true) {}
-
 /// This function calls listen on the Loom instance.
 ///
 /// # Returns:
 /// !void.
 pub fn listen(t: *Tether, loom: *Loom, ctx: *Context) !void {
-    var kqueue = try KQueue.init();
-    errdefer kqueue.deinit();
-    loom.kqueue = kqueue;
     const listener = loom.createListener() catch return;
     // Verify unique resources
-    std.debug.assert(loom.kqueue.kfd == kqueue.kfd);
+    // std.debug.assert(loom.kqueue.kfd == kqueue.kfd);
     try run(t, loom, listener, ctx);
 }
 
-const resp = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello, world";
+const resp = "HTTP/1.1 200 OK\r\nDate: Tue, 19 Aug 2025 18:37:36 GMT\r\nContent-Length: 7\r\nContent-Type: text/plain charset=utf-8\r\n\r\nSUCCESS";
 fn run(
-    t: *Tether,
+    _: *Tether,
     loom: *Loom,
     listener: posix.socket_t,
     ctx: *Context,
 ) !void {
-    const options = ThreadRipper.Options{ .arena = t.arena.*, .max_threads = 4 };
-
-    try loom.scheduler.atm_pool.init(options);
-    // var read_timeout_list = &loom.read_timeout_list;
-
-    // var ctxs = try t.arena.alloc(*Context, 4);
-    // for (0..4) |i| {
-    //     const inner_ctx = try t.arena.create(Context);
-    //     inner_ctx.* = try Context.init(
-    //         t.arena,
-    //         "",
-    //         "",
-    //         null,
-    //         null,
-    //         "",
-    //         null,
-    //     );
-    //     inner_ctx.id = i;
-    //     ctxs[i] = inner_ctx;
-    // }
-    // loom.scheduler.atm_pool.warm_with_ctx(ctxs);
-
-    // var accept_: bool = false;
     while (true) {
-        const next_timeout = loom.enforceTimeout();
-        const ready_events = loom.readEvents(next_timeout) catch return;
+        // const next_timeout = loom.enforceTimeout();
+        const ready_events = loom.readEvents(-1) catch return;
         for (ready_events) |ready| {
             // ready is type kevent
             // udata is the client conn value
@@ -333,10 +260,19 @@ fn run(
                 // 0 is the listener socket so here if we receive a notification
                 // from the listener socket then we need to accept a new conn and add it to the kqueue
                 // else we are reading a new conn
-                0 => loom.acceptConn(listener) catch |err| log.err(
-                    "failed to accept: {}",
-                    .{err},
-                ),
+                // 0 => loom.acceptConn(listener) catch |err| log.err(
+                //     "failed to accept: {}",
+                //     .{err},
+                // ),
+                //
+                0 => {
+                    while (true) {
+                        loom.acceptConn(listener) catch |err| switch (err) {
+                            error.WouldBlock => break, // No more connections waiting, break inner loop
+                            else => |e| log.err("accept error: {}", .{e}),
+                        };
+                    }
+                },
                 else => |nptr| {
                     const client: *Client = @ptrFromInt(nptr);
                     const filter = ready.filter;
@@ -344,8 +280,6 @@ fn run(
                     // Here we read in the client data
                     // we check the filter state
                     if (filter == system.EVFILT.READ) {
-                        // Here we read and write
-
                         while (true) {
                             const msg = client.readMessage() catch |err| {
                                 switch (err) {
@@ -363,7 +297,9 @@ fn run(
                             // read_timeout_list.remove(client.read_timeout_node);
                             // read_timeout_list.append(client.read_timeout_node);
 
-                            try process(client, msg, ctx);
+                            client.fiber = try createFiber(process, .{ client, msg, ctx }, loom.stacks[loom.connected - 1]);
+                            xresume(client.fiber);
+                            // try process(client, msg, ctx);
 
                             // const job_context = try loom.context_pool.create();
                             // job_context.* = try Context.init(
@@ -434,7 +370,7 @@ pub fn acceptConn(self: *Loom, listener: posix.socket_t) !void {
     // const space = self.max - self.connected;
     if (self.connected < self.max) {
         const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.NONBLOCK) catch |err| switch (err) {
-            error.WouldBlock => return,
+            error.WouldBlock => return error.WouldBlock,
             else => return err,
         };
 
@@ -443,7 +379,7 @@ pub fn acceptConn(self: *Loom, listener: posix.socket_t) !void {
         client.* = Client.init(self.arena.*, socket, address, &self.kqueue) catch |err| {
             posix.close(socket);
             log.err("failed to initialize client: {}", .{err});
-            return;
+            return err;
         };
         errdefer client.deinit(self.arena.*);
 
